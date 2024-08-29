@@ -4,3 +4,9 @@ preprocessing/v2skullstripped
 preprocessing/v3registered_non_iso
 preprocessing/v3registered_non_iso_cut
 preprocessing/v4correctedN4_non_iso_cut
+pre_data/
+raw_data/
+Data/cache/
+Data/Test/
+Data/Train/
+checkpoint/
