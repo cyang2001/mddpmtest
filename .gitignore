@@ -1,0 +1,6 @@
+path_to_logs/
+preprocessing/sri_atlas
+preprocessing/v2skullstripped
+preprocessing/v3registered_non_iso
+preprocessing/v3registered_non_iso_cut
+preprocessing/v4correctedN4_non_iso_cut
