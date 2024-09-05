@@ -200,7 +200,8 @@ class CombinedDataModule(LightningDataModule):
                         non_tumor_slices.append({
                             'vol': vol_img.data[..., slice_index],  # 对应的影像切片
                             'seg': seg_img.data[..., slice_index] if seg_img else None,  # 对应的分割标签切片
-                            'mask': mask_img.data[..., slice_index] if mask_img else None  # 对应的脑部掩码切片
+                            'mask': mask_img.data[..., slice_index] if mask_img else None,  # 对应的脑部掩码切片
+                            'slice_index': slice_index
                         })
                         processed_ids.add(unique_id)
 
@@ -214,7 +215,7 @@ class CombinedDataModule(LightningDataModule):
                             'orig': tio.ScalarImage(tensor=slice_vol),
                             'vol': tio.ScalarImage(tensor=slice_vol),
                             'age': sub.age,
-                            'ID': f"{sub.img_name}_slice_{slice_index}",
+                            'ID': f"{sub.img_name}_slice_{slice_data['slice_index']}",
                             'label': sub.label,
                             'Dataset': sub.setname,
                             'stage': sub.settype,
