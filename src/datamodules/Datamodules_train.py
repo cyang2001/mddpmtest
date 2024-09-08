@@ -174,70 +174,75 @@ class CombinedDataModule(LightningDataModule):
     def process_brats_batch(self, batch_df):
         brats_subjects = []
         processed_ids = set()  # 用于存储已处理的ID
+    
+        # 这里我们使用一个字典来存储每个病人的无肿瘤切片
+        patient_slices = {}
+    
         for _, sub in batch_df.iterrows():
             if not os.path.exists(sub.img_path):
                 log.warning(f"Image path does not exist: {sub.img_path}")
                 continue
-
+    
             try:
                 vol_img = tio.ScalarImage(sub.img_path, reader=sitk_reader)
                 seg_img = tio.LabelMap(sub.seg_path, reader=sitk_reader) if sub.seg_path is not None else None
                 mask_img = tio.LabelMap(sub.mask_path, reader=sitk_reader) if sub.mask_path is not None else None
-
+    
                 if vol_img.data is None or (seg_img and seg_img.data is None):
                     log.warning(f"Failed to load image or segmentation for: {sub.img_path}")
                     continue
-
+    
                 non_tumor_slices = []
-
+    
                 for slice_index in range(seg_img.data.shape[-1]):  # 逐切片检查
                     unique_id = f"{sub.img_name}_slice_{slice_index}"
                     if unique_id in processed_ids:
                         log.warning(f"Duplicate slice detected: {unique_id}, skipping...")
                         continue
-
+    
                     if not seg_img.data[..., slice_index].any():  # 如果该切片没有非零值
+                        # 我们只存储无肿瘤切片
                         non_tumor_slices.append({
-                            'vol': vol_img.data[..., slice_index],  # 对应的影像切片
-                            'seg': seg_img.data[..., slice_index] if seg_img else None,  # 对应的分割标签切片
-                            'mask': mask_img.data[..., slice_index] if mask_img else None,  # 对应的脑部掩码切片
+                            'vol': vol_img.data[..., slice_index],
+                            'mask': mask_img.data[..., slice_index] if mask_img else None,
                             'slice_index': slice_index
                         })
                         processed_ids.add(unique_id)
-
-                if non_tumor_slices:
-                    for slice_data in non_tumor_slices:
-                        slice_vol = slice_data['vol'].unsqueeze(-1)  # 恢复到3D形状（H, W, 1）
-                        slice_seg = slice_data['seg'].unsqueeze(-1) if slice_data['seg'] is not None else None
-                        slice_mask = slice_data['mask'].unsqueeze(-1) if slice_data['mask'] is not None else None
-
-                        subject_dict = {
-                            'orig': tio.ScalarImage(tensor=slice_vol),
-                            'vol': tio.ScalarImage(tensor=slice_vol),
-                            'age': sub.age,
-                            'ID': f"{sub.img_name}_slice_{slice_data['slice_index']}",
-                            'label': sub.label,
-                            'Dataset': sub.setname,
-                            'stage': sub.settype,
-                            'path': sub.img_path
-                        }
-
-                        if slice_seg is not None:
-                            subject_dict['seg'] = tio.LabelMap(tensor=slice_seg)
-                        if slice_mask is not None:
-                            subject_dict['mask'] = tio.LabelMap(tensor=slice_mask)
-                        # 去重检查，避免重复处理相同的切片
-                        subject = tio.Subject(subject_dict)
-                        if subject.ID not in [s.ID for s in brats_subjects]:
-                            brats_subjects.append(subject)
-                            log.info(f"Successfully loaded and processed slice {slice_index} of subject: {sub.img_name}")
-                        else:
-                            log.warning(f"Duplicate slice detected: {subject.ID}, skipping...")
-
+    
+                # 将无肿瘤切片存入每个病人的数据结构中
+                if sub.img_name not in patient_slices:
+                    patient_slices[sub.img_name] = {'vol': [], 'mask': []}
+    
+                for slice_data in non_tumor_slices:
+                    patient_slices[sub.img_name]['vol'].append(slice_data['vol'])
+                    if slice_data['mask'] is not None:
+                        patient_slices[sub.img_name]['mask'].append(slice_data['mask'])
+    
             except Exception as e:
                 log.error(f"Error processing subject {sub.img_name}: {e}")
                 continue
-
+    
+        # 处理完所有病人后，将切片重新堆叠成3D体积
+        for patient_id, slices in patient_slices.items():
+            vol_3d = torch.stack(slices['vol'], dim=-1)  # 堆叠回3D形状
+            mask_3d = torch.stack(slices['mask'], dim=-1) if slices['mask'] else None  # 堆叠掩码
+    
+            subject_dict = {
+                'vol': tio.ScalarImage(tensor=vol_3d),
+                'age': sub.age,
+                'ID': patient_id,
+                'label': 'healthy',
+                'Dataset': 'Brats21',
+                'stage': sub.settype,
+                'path': sub.img_path
+            }
+    
+            if mask_3d is not None:
+                subject_dict['mask'] = tio.LabelMap(tensor=mask_3d)
+    
+            subject = tio.Subject(subject_dict)
+            brats_subjects.append(subject)
+    
         return brats_subjects
 
     def train_dataloader(self):
