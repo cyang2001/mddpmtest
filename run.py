@@ -22,7 +22,6 @@ def main(config: DictConfig):
     # Read more here: https://github.com/facebookresearch/hydra/issues/934
     from src.train import train
     from src.utils import utils
-    from src.validate import validate
     # A couple of optional utilities:
     # - disabling python warnings
     # - easier access to debug mode
