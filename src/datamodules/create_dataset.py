@@ -7,7 +7,8 @@ from PIL import Image
 sitk.ProcessObject.SetGlobalDefaultThreader("Platform")
 from multiprocessing import Manager
 import random
-
+from src.utils import utils
+log = utils.get_logger(__name__)
 
 def Train(csv, cfg, preload=True):
     subjects = []
@@ -124,6 +125,7 @@ class preload_wrapper(Dataset):
         self.cache = cache
         self.ds = ds
         self.augment = augment
+        log.info(f"preload initialized with self.ds type: {type(self.ds)}")
 
     def reset_memory(self):
         self.cache.reset()
@@ -140,6 +142,13 @@ class preload_wrapper(Dataset):
         if self.augment:
             subject = self.augment(subject)
         return subject
+    @property
+    def subjects(self):
+        try:
+            return self.ds._subjects  # 直接访问受保护的 _subjects 属性
+        except AttributeError:
+            log.error(f"'_subjects' attribute not found in {type(self.ds)}")
+            raise
 
 
 class vol2slice(Dataset):
@@ -151,11 +160,16 @@ class vol2slice(Dataset):
         self.counter = 0
         self.ind = None
         self.cfg = cfg
+        log.info(f"vol2slice initialized with self.ds type: {type(self.ds)}")
     def __len__(self):
         return len(self.ds)
 
     def __getitem__(self, index):
         subject = self.ds.__getitem__(index)
+        if 'orig' not in subject:
+            log.error(f"'orig' key missing in subject at index {index}")
+            log.error(f"Subject keys: {list(subject.keys())}")
+            raise KeyError("'orig' key missing in subject")
         if self.onlyBrain:
             start_ind = None
             for i in range(subject['vol'].data.shape[-1]):
@@ -190,6 +204,16 @@ class vol2slice(Dataset):
         subject['orig'].data = subject['orig'].data[..., self.ind]
 
         return subject
+    @property
+    def subjects(self):
+        try:
+            return self.ds.subjects  # 尝试直接访问 subjects 属性
+        except AttributeError:
+            try:
+                return self.ds._subjects  # 如果失败，尝试访问 _subjects 属性
+            except AttributeError:
+                log.error(f"'subjects' or '_subjects' attribute not found in {type(self.ds)}")
+                raise
 
 
 def get_transform(cfg):  # only transforms that are applied once before preloading

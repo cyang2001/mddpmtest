@@ -13,6 +13,8 @@ import SimpleITK as sitk
 from torch.utils.data import Dataset
 import gc  
 import tracemalloc  
+from src.datamodules.create_dataset import vol2slice
+from torch.utils.data import ConcatDataset
 log = utils.get_logger(__name__)  # init logger
 
 class IXI(LightningDataModule):
@@ -96,43 +98,51 @@ class CombinedDataModule(LightningDataModule):
         self.cached_brats_val_path = os.path.join(cfg.path.cache_dir, 'cached_brats_val.pkl')
 
     def setup(self, stage: Optional[str] = None):
-        # 处理IXI数据集
+        # 处理 IXI 数据集
         self.ixi_module.setup(stage)
         log.info("IXI dataset setup complete.")
 
-        # 处理BraTS21数据集，如果已经存在缓存则直接加载，否则进行处理
-        self.brats_train_subjects = list(self.load_or_process_brats(self.cfg.path.BraTS21.IDs.train, self.cached_brats_train_path))
-        self.brats_val_subjects = list(self.load_or_process_brats(self.cfg.path.BraTS21.IDs.val, self.cached_brats_val_path))
+        # 设置缓存目录
+        train_cache_dir = os.path.join(self.cfg.path.cache_dir, 'brats_train')
+        val_cache_dir = os.path.join(self.cfg.path.cache_dir, 'brats_val')
 
-        # 确保数据集加载后不为空
-        if not self.brats_train_subjects:
-            raise ValueError("brats_train_subjects is empty after processing.")
-        if not self.brats_val_subjects:
-            raise ValueError("brats_val_subjects is empty after processing.")
+        # 加载或处理 BraTS21 数据集，获取 subject 文件路径列表
+        self.brats_train_subject_paths = self.load_or_process_brats(self.cfg.path.BraTS21.IDs.train, train_cache_dir)
+        self.brats_val_subject_paths = self.load_or_process_brats(self.cfg.path.BraTS21.IDs.val, val_cache_dir)
 
-        # 合并IXI和BraTS21数据集
-        combined_train_subjects = self.ixi_module.train.ds.subjects + self.brats_train_subjects
-        combined_val_subjects = self.ixi_module.val.ds.subjects + self.brats_val_subjects
+        # 创建 LazyBraTSDataset 实例
+        brats_train_dataset = LazyBraTSDataset(self.brats_train_subject_paths, transform=get_transform(self.cfg))
+        brats_val_dataset = LazyBraTSDataset(self.brats_val_subject_paths, transform=get_transform(self.cfg))
+        print(f"Type of self.ixi_module.train: {type(self.ixi_module.train)}")
+        print(f"Type of self.ixi_module.val: {type(self.ixi_module.val)}")
+        # 合并 IXI 数据集和 BraTS21 数据集
+        combined_train_dataset = ConcatDataset([self.ixi_module.train, brats_train_dataset])
+        combined_val_dataset = ConcatDataset([self.ixi_module.val, brats_val_dataset])
 
-        # 这里使用vol2slice仅用于切片选择
-        self.train = vol2slice(tio.SubjectsDataset(combined_train_subjects, transform=get_transform(self.cfg)), self.cfg)
-        self.val = vol2slice(tio.SubjectsDataset(combined_val_subjects, transform=get_transform(self.cfg)), self.cfg)
+        # 创建 DataLoader
+        self.train = DataLoader(combined_train_dataset, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers,
+                                pin_memory=True, shuffle=True, drop_last=self.cfg.get('droplast', False))
+        self.val = DataLoader(combined_val_dataset, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers,
+                              pin_memory=True, shuffle=False)
 
-        log.info(f"Combined dataset setup completed. Train subjects: {len(self.train)}, Validation subjects: {len(self.val)}")
+        log.info(f"Combined dataset setup completed. Train dataset size: {len(self.train.dataset)}, Validation dataset size: {len(self.val.dataset)}")
 
-    def load_or_process_brats(self, csv_path, cache_path):
-        # 检查是否存在缓存文件
-        if os.path.exists(cache_path):
-            return self.load_cached_subjects(cache_path)
+    def load_or_process_brats(self, csv_path, cache_dir):
+        index_file_path = os.path.join(cache_dir, 'subjects_index.pkl')
+        if os.path.exists(index_file_path):
+            return self.load_cached_subjects(cache_dir)
         else:
-            # 如果不存在缓存，则处理BraTS21数据并缓存结果
-            return self.process_and_cache_brats(csv_path, cache_path)
+            return self.process_and_cache_brats(csv_path, cache_dir)
 
-    def process_and_cache_brats(self, csv_path, cache_path, batch_size=100):
+    def process_and_cache_brats(self, csv_path, cache_dir, batch_size=100):
         df = pd.read_csv(csv_path)
         df['img_path'] = df['img_path'].apply(lambda x: os.path.join(self.cfg.path.pathBase + '/Data/', x.lstrip('/')))
         df['mask_path'] = df['mask_path'].apply(lambda x: os.path.join(self.cfg.path.pathBase + '/Data/', x.lstrip('/')))
         df['seg_path'] = df['seg_path'].apply(lambda x: os.path.join(self.cfg.path.pathBase + '/Data/', x.lstrip('/')))
+
+        os.makedirs(cache_dir, exist_ok=True)
+        index_file_path = os.path.join(cache_dir, 'subjects_index.pkl')
+        subject_paths = []
 
         num_batches = len(df) // batch_size + (1 if len(df) % batch_size != 0 else 0)
 
@@ -145,104 +155,101 @@ class CombinedDataModule(LightningDataModule):
 
             brats_subjects = self.process_brats_batch(batch_df)
 
-            # 每个批次处理完成后直接缓存
-            with open(cache_path, 'ab') as f:
-                pickle.dump(brats_subjects, f)
+            for subject in brats_subjects:
+                subject_id = subject['ID']
+                subject_cache_path = os.path.join(cache_dir, f"{subject_id}.pkl")
+                with open(subject_cache_path, 'wb') as f:
+                    pickle.dump(subject, f)
+                subject_paths.append(subject_cache_path)
 
-            del brats_subjects  # 释放内存
-            gc.collect()  # 手动触发垃圾回收
+            # 释放内存
+            del brats_subjects
+            gc.collect()
 
-        # 重新加载缓存的数据
-        return self.load_cached_subjects(cache_path)
+        # 保存索引文件
+        with open(index_file_path, 'wb') as f:
+            pickle.dump(subject_paths, f)
 
-    def load_cached_subjects(self, cache_path):
-        loaded_count = 0
-        try:
-            with open(cache_path, 'rb') as f:
-                while True:
-                    try:
-                        batch_subjects = pickle.load(f)
-                        loaded_count += len(batch_subjects)
-                        yield from batch_subjects
-                    except EOFError:
-                        break
-            log.info(f"Loaded {loaded_count} subjects from cache.")
-        except Exception as e:
-            log.error(f"Error loading cached BraTS21 subjects: {e}")
-            raise
+        return subject_paths  # 返回 subject 文件路径列表
+    def load_cached_subjects(self, cache_dir):
+        index_file_path = os.path.join(cache_dir, 'subjects_index.pkl')
+        if not os.path.exists(index_file_path):
+            log.error(f"Index file not found at {index_file_path}")
+            raise FileNotFoundError(f"Index file not found at {index_file_path}")
+        with open(index_file_path, 'rb') as f:
+            subject_paths = pickle.load(f)
+        log.info(f"Loaded {len(subject_paths)} subject paths from index.")
+        return subject_paths
 
     def process_brats_batch(self, batch_df):
         brats_subjects = []
-        processed_ids = set()  # 用于存储已处理的ID
-    
-        # 这里我们使用一个字典来存储每个病人的无肿瘤切片
+        processed_ids = set()
+
         patient_slices = {}
-    
+
         for _, sub in batch_df.iterrows():
             if not os.path.exists(sub.img_path):
                 log.warning(f"Image path does not exist: {sub.img_path}")
                 continue
-    
+
             try:
                 vol_img = tio.ScalarImage(sub.img_path, reader=sitk_reader)
-                seg_img = tio.LabelMap(sub.seg_path, reader=sitk_reader) if sub.seg_path is not None else None
-                mask_img = tio.LabelMap(sub.mask_path, reader=sitk_reader) if sub.mask_path is not None else None
-    
+                seg_img = tio.LabelMap(sub.seg_path, reader=sitk_reader) if sub.seg_path else None
+                mask_img = tio.LabelMap(sub.mask_path, reader=sitk_reader) if sub.mask_path else None
+
                 if vol_img.data is None or (seg_img and seg_img.data is None):
                     log.warning(f"Failed to load image or segmentation for: {sub.img_path}")
                     continue
-    
+
                 non_tumor_slices = []
-    
-                for slice_index in range(seg_img.data.shape[-1]):  # 逐切片检查
+
+                for slice_index in range(seg_img.data.shape[-1]):
                     unique_id = f"{sub.img_name}_slice_{slice_index}"
                     if unique_id in processed_ids:
                         log.warning(f"Duplicate slice detected: {unique_id}, skipping...")
                         continue
-    
-                    if not seg_img.data[..., slice_index].any():  # 如果该切片没有非零值
-                        # 我们只存储无肿瘤切片
+
+                    if not seg_img.data[..., slice_index].any():
                         non_tumor_slices.append({
                             'vol': vol_img.data[..., slice_index],
                             'mask': mask_img.data[..., slice_index] if mask_img else None,
                             'slice_index': slice_index
                         })
                         processed_ids.add(unique_id)
-    
-                # 将无肿瘤切片存入每个病人的数据结构中
+
                 if sub.img_name not in patient_slices:
                     patient_slices[sub.img_name] = {'vol': [], 'mask': []}
-    
+
                 for slice_data in non_tumor_slices:
                     patient_slices[sub.img_name]['vol'].append(slice_data['vol'])
                     if slice_data['mask'] is not None:
                         patient_slices[sub.img_name]['mask'].append(slice_data['mask'])
-    
+
             except Exception as e:
                 log.error(f"Error processing subject {sub.img_name}: {e}")
                 continue
-    
-        # 处理完所有病人后，将切片重新堆叠成3D体积
+
         for patient_id, slices in patient_slices.items():
-            vol_3d = torch.stack(slices['vol'], dim=-1)  # 堆叠回3D形状
-            mask_3d = torch.stack(slices['mask'], dim=-1) if slices['mask'] else None  # 堆叠掩码
-    
+            vol_3d = torch.stack(slices['vol'], dim=-1).float()
+            mask_3d = torch.stack(slices['mask'], dim=-1) if slices['mask'] else None
+
             subject_dict = {
-                'vol': tio.ScalarImage(tensor=vol_3d),
+                'orig': tio.ScalarImage(tensor=vol_3d),
+                'vol': tio.ScalarImage(tensor=vol_3d.clone()),
                 'age': sub.age,
-                'ID': patient_id,
+                'ID': patient_id,  # 确保 ID 唯一
                 'label': 'healthy',
                 'Dataset': 'Brats21',
                 'stage': sub.settype,
                 'path': sub.img_path
             }
-    
+
             if mask_3d is not None:
                 subject_dict['mask'] = tio.LabelMap(tensor=mask_3d)
-    
+
             subject = tio.Subject(subject_dict)
             brats_subjects.append(subject)
-    
+
         return brats_subjects
 
     def train_dataloader(self):
@@ -261,7 +268,7 @@ def sitk_reader(path):
     except Exception as e:
         log.error(f"Error reading image at {path}: {e}")
     raise
-def get_transform(cfg):  # only transforms that are applied once before preloading
+def get_transform(cfg):
     h, w, d = tuple(cfg.get('imageDim', (160, 192, 160)))
     if not cfg.resizedEvaluation:
         exclude_from_resampling = ['vol_orig', 'mask_orig', 'seg_orig']
@@ -273,70 +280,34 @@ def get_transform(cfg):  # only transforms that are applied once before preloadi
             preprocess = tio.Compose([
                 tio.CropOrPad((h, w, d), padding_mode=0),
                 tio.RescaleIntensity((0, 1), percentiles=(cfg.get('perc_low', 1), cfg.get('perc_high', 99)),
-                                    masking_method='mask'),
-                tio.Resample(cfg.get('rescaleFactor', 3.0), image_interpolation='bspline', exclude=exclude_from_resampling),
+                                     masking_method='mask'),
+                tio.Resample(cfg.get('rescaleFactor', 3.0), image_interpolation='bspline',
+                             exclude=exclude_from_resampling),
             ])
         else:
             preprocess = tio.Compose([
                 tio.RescaleIntensity((0, 1), percentiles=(cfg.get('perc_low', 1), cfg.get('perc_high', 99)),
-                                    masking_method='mask'),
-                tio.Resample(cfg.get('rescaleFactor', 3.0), image_interpolation='bspline', exclude=exclude_from_resampling),
+                                     masking_method='mask'),
+                tio.Resample(cfg.get('rescaleFactor', 3.0), image_interpolation='bspline',
+                             exclude=exclude_from_resampling),
             ])
         return preprocess
     except Exception as e:
         log.error(f"Error in get_transform: {e}")
         raise
-class vol2slice(Dataset):
-    def __init__(self, ds, cfg, onlyBrain=False, slice=None, seq_slices=None):
-        self.ds = ds
-        self.onlyBrain = onlyBrain
-        self.slice = slice
-        self.seq_slices = seq_slices
-        self.counter = 0
-        self.ind = None
-        self.cfg = cfg
-        if not isinstance(self.ds, tio.SubjectsDataset):
-            log.error("vol2slice initialized with a non-SubjectsDataset object.")
-            raise TypeError("The provided ds is not an instance of tio.SubjectsDataset.")        
-        log.info(f"vol2slice initialized with {len(self.ds.subjects)} subjects.")
+
+class LazyBraTSDataset(Dataset):
+    def __init__(self, subject_paths, transform=None):
+        self.subject_paths = subject_paths
+        self.transform = transform
+
     def __len__(self):
-        return len(self.ds)
+        return len(self.subject_paths)
 
     def __getitem__(self, index):
-        try:
-            subject = self.ds.__getitem__(index)
-            if self.onlyBrain:
-                start_ind = None
-                for i in range(subject['vol'].data.shape[-1]):
-                    if subject['mask'].data[0, :, :, i].any() and start_ind is None:
-                        start_ind = i
-                    if not subject['mask'].data[0, :, :, i].any() and start_ind is not None:
-                        stop_ind = i
-                low = start_ind
-                high = stop_ind
-            else:
-                low = 0
-                high = subject['vol'].data.shape[-1]
-            if self.slice is not None:
-                self.ind = self.slice
-                if self.seq_slices is not None:
-                    low = self.ind
-                    high = self.ind + self.seq_slices
-                    self.ind = torch.randint(low, high, size=[1])
-            else:
-                if self.cfg.get('unique_slice', False):
-                    if self.counter % self.cfg.batch_size == 0 or self.ind is None:
-                        self.ind = torch.randint(low, high, size=[1])
-                    self.counter += 1
-                else:
-                    self.ind = torch.randint(low, high, size=[1])
-
-            subject['ind'] = self.ind
-            subject['vol'].data = subject['vol'].data[..., self.ind]
-            subject['mask'].data = subject['mask'].data[..., self.ind]
-            subject['orig'].data = subject['orig'].data[..., self.ind]
-
-            return subject
-        except Exception as e:
-            log.error(f"Error in vol2slice __getitem__ for index {index}: {e}")
-            raise
+        subject_path = self.subject_paths[index]
+        with open(subject_path, 'rb') as f:
+            subject = pickle.load(f)
+        if self.transform:
+            subject = self.transform(subject)
+        return subject

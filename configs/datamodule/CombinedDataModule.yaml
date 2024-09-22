@@ -53,12 +53,12 @@ cfg:
   
   modelpath: ${data_dir}/Data/pretrained_2D_model/
   num_workers: 4
-  batch_size: 32
+  batch_size: 16
   lr : 0.0001
   droplast: True
 
   # Evaluation
-  mode: t2
+  mode: t1
   resizedEvaluation: True
   testsets: 
   - Datamodules_eval.Brats21
