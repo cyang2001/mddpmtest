@@ -16,7 +16,25 @@ import tracemalloc
 from src.datamodules.create_dataset import vol2slice
 from torch.utils.data import ConcatDataset
 log = utils.get_logger(__name__)  # init logger
+from torch.utils.data._utils.collate import default_collate
 
+def custom_collate_fn(batch):
+    elem = batch[0]
+    collated_batch = {}
+    for key in elem:
+        if isinstance(elem[key], torch.Tensor):
+            collated_batch[key] = default_collate([d[key] for d in batch])
+        elif isinstance(elem[key], (int, float)):
+            collated_batch[key] = torch.tensor([d[key] for d in batch])
+        elif isinstance(elem[key], str):
+            collated_batch[key] = [d[key] for d in batch]
+        elif isinstance(elem[key], dict):
+            # 递归调用 collate_fn 处理嵌套的字典
+            collated_batch[key] = custom_collate_fn([d[key] for d in batch])
+        else:
+            # 对于其他类型的数据，直接组成列表
+            collated_batch[key] = [d[key] for d in batch]
+    return collated_batch
 class IXI(LightningDataModule):
     def __init__(self, cfg, fold=None):
         super(IXI, self).__init__()
@@ -77,16 +95,16 @@ class IXI(LightningDataModule):
             raise
 
     def train_dataloader(self):
-        return DataLoader(self.train, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers, pin_memory=True, shuffle=True, drop_last=self.cfg.get('droplast', False))
+        return DataLoader(self.train, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers, pin_memory=True, shuffle=True, drop_last=self.cfg.get('droplast', False), collate_fn=custom_collate_fn)
 
     def val_dataloader(self):
-        return DataLoader(self.val, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers, pin_memory=True, shuffle=False)
+        return DataLoader(self.val, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers, pin_memory=True, shuffle=False, collate_fn=custom_collate_fn)
 
     def val_eval_dataloader(self):
-        return DataLoader(self.val_eval, batch_size=1, num_workers=self.cfg.num_workers, pin_memory=True, shuffle=False)
+        return DataLoader(self.val_eval, batch_size=1, num_workers=self.cfg.num_workers, pin_memory=True, shuffle=False, collate_fn=custom_collate_fn)
 
     def test_eval_dataloader(self):
-        return DataLoader(self.test_eval, batch_size=1, num_workers=self.cfg.num_workers, pin_memory=True, shuffle=False)
+        return DataLoader(self.test_eval, batch_size=1, num_workers=self.cfg.num_workers, pin_memory=True, shuffle=False, collate_fn=custom_collate_fn)
 
 class CombinedDataModule(LightningDataModule):
     def __init__(self, cfg, fold=None):
@@ -113,19 +131,29 @@ class CombinedDataModule(LightningDataModule):
         # 创建 LazyBraTSDataset 实例
         brats_train_dataset = LazyBraTSDataset(self.brats_train_subject_paths, transform=get_transform(self.cfg))
         brats_val_dataset = LazyBraTSDataset(self.brats_val_subject_paths, transform=get_transform(self.cfg))
+        brats_train_dataset = vol2slice(brats_train_dataset, self.cfg)
+        brats_val_dataset = vol2slice(brats_val_dataset, self.cfg)
+
         print(f"Type of self.ixi_module.train: {type(self.ixi_module.train)}")
         print(f"Type of self.ixi_module.val: {type(self.ixi_module.val)}")
         # 合并 IXI 数据集和 BraTS21 数据集
         combined_train_dataset = ConcatDataset([self.ixi_module.train, brats_train_dataset])
         combined_val_dataset = ConcatDataset([self.ixi_module.val, brats_val_dataset])
-
-        # 创建 DataLoader
-        self.train = DataLoader(combined_train_dataset, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers,
-                                pin_memory=True, shuffle=True, drop_last=self.cfg.get('droplast', False))
-        self.val = DataLoader(combined_val_dataset, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers,
-                              pin_memory=True, shuffle=False)
-
-        log.info(f"Combined dataset setup completed. Train dataset size: {len(self.train.dataset)}, Validation dataset size: {len(self.val.dataset)}")
+        self.train = combined_train_dataset
+        self.val = combined_val_dataset
+        log.info(f"Combined dataset setup completed. Train dataset size: {len(self.train)}, Validation dataset size: {len(self.val)}")
+    def train_dataloader(self) -> None:
+        return DataLoader(self.train, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers,
+                                pin_memory=True, shuffle=True, drop_last=self.cfg.get('droplast', False), collate_fn=custom_collate_fn)
+    def val_dataloader(self) -> None:
+        return DataLoader(self.val, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers,
+                              pin_memory=True, shuffle=False, collate_fn=custom_collate_fn)
+    # 这里需要改成两个数据集合并的验证集
+    def val_eval_dataloader(self):
+        return DataLoader(self.ixi_module.val_eval, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers, pin_memory=True, shuffle=False, collate_fn=custom_collate_fn)
+    def test_eval_dataloader(self):
+        return DataLoader(self.ixi_module.test_eval, batch_size=1, num_workers=self.cfg.num_workers, pin_memory=True, shuffle=False, collate_fn=custom_collate_fn)
+        
 
     def load_or_process_brats(self, csv_path, cache_dir):
         index_file_path = os.path.join(cache_dir, 'subjects_index.pkl')
@@ -238,8 +266,8 @@ class CombinedDataModule(LightningDataModule):
                 'vol': tio.ScalarImage(tensor=vol_3d.clone()),
                 'age': sub.age,
                 'ID': patient_id,  # 确保 ID 唯一
-                'label': 'healthy',
-                'Dataset': 'Brats21',
+                'label': sub.label,
+                'Dataset': sub.setname,
                 'stage': sub.settype,
                 'path': sub.img_path
             }
@@ -252,11 +280,6 @@ class CombinedDataModule(LightningDataModule):
 
         return brats_subjects
 
-    def train_dataloader(self):
-        return DataLoader(self.train, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers, pin_memory=True, shuffle=True, drop_last=self.cfg.get('droplast', False))
-
-    def val_dataloader(self):
-        return DataLoader(self.val, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers, pin_memory=True, shuffle=False)
 
     def test_eval_dataloader(self):
         return self.ixi_module.test_eval_dataloader()

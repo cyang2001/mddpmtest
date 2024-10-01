@@ -274,10 +274,23 @@ class DDPM_2D(LightningModule):
         return None
 
     def training_step(self, batch, batch_idx: int):
-        # process batch
+        # 获取输入和掩码
         input = batch['vol'][tio.DATA].squeeze(-1)
         orig = batch['orig'][tio.DATA].squeeze(-1)
         true_mask = batch['mask'][tio.DATA].squeeze(-1)
+
+
+        # 遍历批次中的每个样本
+        for i in range(input.shape[0]):
+            true_mask_slice = true_mask[i, 0, :, :]
+            mask_sum = true_mask_slice.sum().item()
+            print(f"Sample {i} in batch {batch_idx}: true_mask_slice sum = {mask_sum}")
+
+            if mask_sum == 0:
+                print(f"Warning: true_mask_slice is all zeros for sample {i} in batch {batch_idx}")
+                # 可以选择跳过该样本
+                print("name of the sample is: ", batch['ID'][i])
+                continue
 
         # generate bboxes for DDPM
         if self.cfg.get('grid_boxes', False):  # sample boxes from a grid
@@ -325,7 +338,6 @@ class DDPM_2D(LightningModule):
             for k in range(num_of_patches):
                 patch_height = random.randint(min_patch_len, max_patch_len)
                 patch_width = random.randint(min_patch_len, max_patch_len)
-
                 row_point = random.randint(nonzero_ind_row[0], nonzero_ind_row[-1] - 10 - max_patch_len) + 5
                 col_point = random.randint(nonzero_ind_col[0], nonzero_ind_col[-1] - 10 - max_patch_len) + 5
 

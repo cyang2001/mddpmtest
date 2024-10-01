@@ -47,6 +47,7 @@ class BoxSampler():
             bounding box (torch.tensor): bounding box of shape [batch, num_boxes, x_min, x_max, y_min, y_max]
         """
         # get image size
+        print(f'Image shape: {image.shape}')
         batch_size, channel, height, width = image.shape
 
         # checks
