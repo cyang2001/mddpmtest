@@ -9,4 +9,3 @@ num_sanity_val_steps : 0 # This does not work with dp, only with ddp
 check_val_every_n_epoch : 1
 benchmark: True
 overfit_batches: False
-#resume_from_checkpoint: ../mDDPM_IXI_mDDPM__2024-05-17_16-45-25/checkpoints/last_fold-1.ckpt

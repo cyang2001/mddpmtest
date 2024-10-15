@@ -104,11 +104,11 @@ def train(cfg: DictConfig) -> Optional[float]:
 
             # 添加自定义回调
             custom_checkpoint_callback = CustomModelCheckpoint(
-                save_dir='/save',  # 指定保存目录
-                save_every_n_epochs=50,  # 每 50 个 epoch 保存一次
-                monitor=None,  # 不监控任何指标
+                save_dir='/save', 
+                save_every_n_epochs=10, 
+                monitor=None,  
                 save_last=False,
-                save_top_k=0,  # 不需要保存 top k 模型
+                save_top_k=0,  
                 verbose=True,
             )
             callbacks.append(custom_checkpoint_callback)
@@ -116,7 +116,7 @@ def train(cfg: DictConfig) -> Optional[float]:
             callbacks = []
             custom_checkpoint_callback = CustomModelCheckpoint(
                 save_dir='/save',
-                save_every_n_epochs=50,
+                save_every_n_epochs=10,
                 monitor=None,
                 save_last=False,
                 save_top_k=0,
@@ -125,9 +125,17 @@ def train(cfg: DictConfig) -> Optional[float]:
             callbacks.append(custom_checkpoint_callback)
         # Init lightning loggers
         logger: List[LightningLoggerBase] = []
+        # 在实例化 logger 时，添加 resume 参数
         if "logger" in cfg:
             for _, lg_conf in cfg.logger.items():
                 if "_target_" in lg_conf:
+                    if lg_conf._target_ == 'pytorch_lightning.loggers.WandbLogger':
+                        if cfg.get('resume', False):
+                            lg_conf.resume = 'must'
+                            # 从检查点加载运行 ID
+                            lg_conf.id = load_run_id_from_checkpoint(cfg.resume_from_checkpoint)
+                        else:
+                            lg_conf.resume = 'allow'
                     log.info(f"Instantiating logger <{lg_conf._target_}>")
                     logger.append(hydra.utils.instantiate(lg_conf))
 
@@ -137,13 +145,46 @@ def train(cfg: DictConfig) -> Optional[float]:
                 cfg.trainer.resume_from_checkpoint = checkpoints[f"fold-{fold+1}"]
                 cfg.ckpt_path=None
             log.info(f"Restoring Trainer State of loaded checkpoint: ",cfg.trainer.resume_from_checkpoint)
-
+        
         # Init lightning trainer
-        log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
-        trainer: Trainer = hydra.utils.instantiate(
-            cfg.trainer, callbacks=callbacks, logger=logger, _convert_="partial", plugins=plugs
-        )          
+         # 检查是否需要恢复训练
+        if cfg.get('resume', False):
+            resume_ckpt = cfg.get('resume_from_checkpoint', None)
+            if resume_ckpt is not None and os.path.exists(resume_ckpt):
+                log.info(f"Resuming training from checkpoint: {resume_ckpt}")
+                # 从检查点中加载 WandB 的 id
+                wandb_id = load_run_id_from_checkpoint(resume_ckpt)
+                cfg.wandb_id = wandb_id
+                cfg.wandb_resume = 'must'
+            else:
+                log.error("Checkpoint path does not exist. Starting training from scratch.")
+                cfg.wandb_id = None
+                cfg.wandb_resume = False
+        else:
+            cfg.wandb_id = None
+            cfg.wandb_resume = False
 
+        # 初始化日志记录器
+        logger: List[LightningLoggerBase] = []
+        if "logger" in cfg:
+            for _, lg_conf in cfg.logger.items():
+                if "_target_" in lg_conf:
+                    # 设置 WandB 的 id 和 resume 参数
+                    if lg_conf._target_ == 'pytorch_lightning.loggers.WandbLogger':
+                        lg_conf.id = cfg.wandb_id
+                        lg_conf.resume = cfg.wandb_resume
+                    log.info(f"Instantiating logger <{lg_conf._target_}>")
+                    logger.append(hydra.utils.instantiate(lg_conf))
+
+        # 初始化训练器
+        trainer: Trainer = hydra.utils.instantiate(
+            cfg.trainer,
+            callbacks=callbacks,
+            logger=logger,
+            _convert_="partial",
+            plugins=plugs,
+            resume_from_checkpoint=cfg.get('resume_from_checkpoint', None)
+        )
         # Send some parameters from config to all lightning loggers
         log.info("Logging hyperparameters!")
         utils.log_hyperparameters(
@@ -262,6 +303,19 @@ class CustomModelCheckpoint(ModelCheckpoint):
             # 如果存在，则删除旧的模型文件
             if os.path.exists(filepath):
                 os.remove(filepath)
-            # 保存新的模型文件，包括优化器和调度器状态
-            trainer.save_checkpoint(filepath)
+            # 保存新的模型文件，包括优化器和调度器状态，以及 WandB 的 id
+            checkpoint = {
+                'epoch': epoch + 1,
+                'state_dict': pl_module.state_dict(),
+                'optimizer_state_dict': trainer.optimizers[0].state_dict(),
+                'lr_scheduler_state_dict': trainer.lr_schedulers[0]['scheduler'].state_dict() if trainer.lr_schedulers else None,
+                'wandb_id': pl_module.logger.experiment.id  # 保存 WandB 的 id
+            }
+            torch.save(checkpoint, filepath)
             pl_module.logger.info(f"Checkpoint saved at epoch {epoch+1} to {filepath}")
+def load_run_id_from_checkpoint(checkpoint_path):
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    wandb_id = checkpoint.get('wandb_id', None)
+    if wandb_id is None:
+        raise ValueError("WandB run ID not found in the checkpoint.")
+    return wandb_id

@@ -52,3 +52,9 @@ checkpoint: 'best' # which checkpoints to load
 
 
 load_checkpoint:  ../checkpoint/ # path to checkpoint to load
+wandb_id: null  # 默认情况下为 null，表示让 WandB 自动生成 id
+wandb_resume: False  # 默认不恢复 WandB 运行
+
+# 添加 resume 参数
+resume: False
+resume_from_checkpoint: null

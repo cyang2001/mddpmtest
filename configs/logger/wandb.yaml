@@ -6,8 +6,8 @@ wandb:
   name:  ${hydra:job.name}
   save_dir: "."
   offline: False # set True to store all logs only locally
-  id: null # pass correct id to resume experiment!
-  resume: False
+  id: ${wandb_id} # pass correct id to resume experiment!
+  resume: ${wandb_resume}
   log_model: False
   prefix: ""
   job_type: ""
