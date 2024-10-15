@@ -125,8 +125,8 @@ class CombinedDataModule(LightningDataModule):
         val_cache_dir = os.path.join(self.cfg.path.cache_dir, 'brats_val')
 
         # 加载或处理 BraTS21 数据集，获取 subject 文件路径列表
-        self.brats_train_subject_paths = self.load_or_process_brats(self.cfg.path.BraTS21.IDs.train, train_cache_dir)
-        self.brats_val_subject_paths = self.load_or_process_brats(self.cfg.path.BraTS21.IDs.val, val_cache_dir)
+        self.brats_train_subject_paths = self.load_or_process_brats(self.cfg.path.Brats21.IDs.train, train_cache_dir)
+        self.brats_val_subject_paths = self.load_or_process_brats(self.cfg.path.Brats21.IDs.val, val_cache_dir)
 
         # 创建 LazyBraTSDataset 实例
         brats_train_dataset = LazyBraTSDataset(self.brats_train_subject_paths, transform=get_transform(self.cfg))

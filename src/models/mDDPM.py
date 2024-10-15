@@ -280,18 +280,6 @@ class DDPM_2D(LightningModule):
         true_mask = batch['mask'][tio.DATA].squeeze(-1)
 
 
-        # 遍历批次中的每个样本
-        for i in range(input.shape[0]):
-            true_mask_slice = true_mask[i, 0, :, :]
-            mask_sum = true_mask_slice.sum().item()
-            print(f"Sample {i} in batch {batch_idx}: true_mask_slice sum = {mask_sum}")
-
-            if mask_sum == 0:
-                print(f"Warning: true_mask_slice is all zeros for sample {i} in batch {batch_idx}")
-                # 可以选择跳过该样本
-                print("name of the sample is: ", batch['ID'][i])
-                continue
-
         # generate bboxes for DDPM
         if self.cfg.get('grid_boxes', False):  # sample boxes from a grid
             bbox = torch.zeros([input.shape[0], 4], dtype=int)

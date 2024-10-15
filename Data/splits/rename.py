@@ -15,7 +15,7 @@ def add_columns_to_csv(input_csv_path, output_csv_path, setname_value, settype_v
 # 示例使用
 input_csv_path = 'Brats21_val.csv'  # 输入CSV文件路径
 output_csv_path = 'Brats21_val.csv'  # 输出CSV文件路径
-setname_value = 'BraTS21'  # 你想要插入的setname的值
+setname_value = 'Brats21'  # 你想要插入的setname的值
 settype_value = 'val'  # 你想要插入的settype的值
 
 add_columns_to_csv(input_csv_path, output_csv_path, setname_value, settype_value)

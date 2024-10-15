@@ -18,6 +18,8 @@ from src.utils import utils
 from pytorch_lightning.loggers import LightningLoggerBase
 import pickle
 
+from pytorch_lightning.callbacks import ModelCheckpoint
+
 torch.multiprocessing.set_sharing_strategy('file_system')
 os.environ['NUMEXPR_MAX_THREADS'] = '16'
 warnings.filterwarnings(
@@ -94,10 +96,33 @@ def train(cfg: DictConfig) -> Optional[float]:
         if "callbacks" in cfg:
             for _, cb_conf in cfg.callbacks.items():
                 if "_target_" in cb_conf:
+                    if cb_conf._target_ == 'pytorch_lightning.callbacks.ModelCheckpoint':
+                        # 跳过默认的 ModelCheckpoint，使用自定义的
+                        continue
                     log.info(f"Instantiating callback <{cb_conf._target_}>")
                     callbacks.append(hydra.utils.instantiate(cb_conf))
-            callbacks[0].FILE_EXTENSION = f'_fold-{fold+1}.ckpt' # naming of logs for cross validation callbacks[0] is the model checkpoint callback (this is a hacky way to do this)
 
+            # 添加自定义回调
+            custom_checkpoint_callback = CustomModelCheckpoint(
+                save_dir='/save',  # 指定保存目录
+                save_every_n_epochs=50,  # 每 50 个 epoch 保存一次
+                monitor=None,  # 不监控任何指标
+                save_last=False,
+                save_top_k=0,  # 不需要保存 top k 模型
+                verbose=True,
+            )
+            callbacks.append(custom_checkpoint_callback)
+        else:
+            callbacks = []
+            custom_checkpoint_callback = CustomModelCheckpoint(
+                save_dir='/save',
+                save_every_n_epochs=50,
+                monitor=None,
+                save_last=False,
+                save_top_k=0,
+                verbose=True,
+            )
+            callbacks.append(custom_checkpoint_callback)
         # Init lightning loggers
         logger: List[LightningLoggerBase] = []
         if "logger" in cfg:
@@ -220,3 +245,23 @@ def train(cfg: DictConfig) -> Optional[float]:
         logger=logger,
     )
 
+
+# 自定义回调类
+class CustomModelCheckpoint(ModelCheckpoint):
+    def __init__(self, save_dir, save_every_n_epochs=50, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.save_dir = save_dir
+        self.save_every_n_epochs = save_every_n_epochs
+        os.makedirs(self.save_dir, exist_ok=True)
+
+    def on_epoch_end(self, trainer, pl_module):
+        epoch = trainer.current_epoch
+        if (epoch + 1) % self.save_every_n_epochs == 0:
+            # 构建模型文件路径
+            filepath = os.path.join(self.save_dir, 'model.ckpt')
+            # 如果存在，则删除旧的模型文件
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            # 保存新的模型文件，包括优化器和调度器状态
+            trainer.save_checkpoint(filepath)
+            pl_module.logger.info(f"Checkpoint saved at epoch {epoch+1} to {filepath}")

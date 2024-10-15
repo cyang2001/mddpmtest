@@ -22,10 +22,10 @@ cfg:
         test: ${data_dir}/Data/splits/IXI_test.csv
       keep_t2: ${data_dir}/Data/splits/avail_t2.csv
 
-    BraTS21:
+    Brats21:
       IDs: 
         train: ${data_dir}/Data/splits/Brats21_test.csv 
-        #test: ${data_dir}/Data/splits/Brats21_test.csv
+        test: ${data_dir}/Data/splits/Brats21_test.csv
         val: ${data_dir}/Data/splits/Brats21_val.csv
 
   imageDim: [160,192,160] 

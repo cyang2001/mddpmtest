@@ -184,24 +184,33 @@ class vol2slice(Dataset):
             low = 0
             high = subject['vol'].data.shape[-1]
         if self.slice is not None:
-            self.ind = self.slice
+            ind = self.slice
             if self.seq_slices is not None:
-                low = self.ind
-                high = self.ind + self.seq_slices
-                self.ind = torch.randint(low, high, size=[1])
+                low = ind
+                high = ind + self.seq_slices
+                ind = torch.randint(low, high, size=(1,)).item()
         else:
-            if self.cfg.get('unique_slice', False):  # if all slices in one batch need to be at the same location
-                if self.counter % self.cfg.batch_size == 0 or self.ind is None:  # only change the index when changing to new batch
-                    self.ind = torch.randint(low, high, size=[1])
-                self.counter = self.counter + 1
+            if self.cfg.get('unique_slice', False):
+                if self.counter % self.cfg.batch_size == 0:
+                    ind = torch.randint(low, high, size=(1,)).item()
+                    self.last_ind = ind
+                else:
+                    ind = self.last_ind
+                self.counter += 1
             else:
-                self.ind = torch.randint(low, high, size=[1])
+                ind = torch.randint(low, high, size=(1,)).item()
+                
+        ind_tensor = torch.tensor([ind])
+        # 更新 `subject` 的数据
+        subject['ind'] = ind
+        subject['vol'].data = subject['vol'].data[..., ind_tensor]
+        subject['mask'].data = subject['mask'].data[..., ind_tensor]
+        subject['orig'].data = subject['orig'].data[..., ind_tensor]
 
-        subject['ind'] = self.ind
-
-        subject['vol'].data = subject['vol'].data[..., self.ind]
-        subject['mask'].data = subject['mask'].data[..., self.ind]
-        subject['orig'].data = subject['orig'].data[..., self.ind]
+        # 检查掩码是否全为零
+        if not subject['mask'].data.any() or subject['mask'].data.sum() < 600:
+            # 掩码全为零，尝试下一个索引
+            return self.__getitem__((index + 1) % len(self.ds))
 
         return subject
     @property
