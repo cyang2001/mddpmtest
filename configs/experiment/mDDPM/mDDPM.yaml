@@ -40,7 +40,7 @@ logger:
 ckpt_path: best
 
 trainer:
-  max_epochs: 160
+  max_epochs: 1200
   precision: 32
 
 name : mDDPM

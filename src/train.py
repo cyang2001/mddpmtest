@@ -17,9 +17,9 @@ import torch
 from src.utils import utils
 from pytorch_lightning.loggers import LightningLoggerBase
 import pickle
-
+from hydra.utils import get_original_cwd
 from pytorch_lightning.callbacks import ModelCheckpoint
-
+from pytorch_lightning.loggers import WandbLogger
 torch.multiprocessing.set_sharing_strategy('file_system')
 os.environ['NUMEXPR_MAX_THREADS'] = '16'
 warnings.filterwarnings(
@@ -104,7 +104,7 @@ def train(cfg: DictConfig) -> Optional[float]:
 
             # 添加自定义回调
             custom_checkpoint_callback = CustomModelCheckpoint(
-                save_dir='/save', 
+                save_dir='./checkpoints', 
                 save_every_n_epochs=10, 
                 monitor=None,  
                 save_last=False,
@@ -115,7 +115,7 @@ def train(cfg: DictConfig) -> Optional[float]:
         else:
             callbacks = []
             custom_checkpoint_callback = CustomModelCheckpoint(
-                save_dir='/save',
+                save_dir='./checkpoints',
                 save_every_n_epochs=10,
                 monitor=None,
                 save_last=False,
@@ -149,20 +149,25 @@ def train(cfg: DictConfig) -> Optional[float]:
         # Init lightning trainer
          # 检查是否需要恢复训练
         if cfg.get('resume', False):
-            resume_ckpt = cfg.get('resume_from_checkpoint', None)
-            if resume_ckpt is not None and os.path.exists(resume_ckpt):
+            resume_ckpt = cfg.get('resume_from_checkpoint', 'checkpoints/model.ckpt')
+            # 使用 get_original_cwd() 来构建绝对路径
+            resume_ckpt = os.path.join(hydra.utils.get_original_cwd(), resume_ckpt)
+            if os.path.exists(resume_ckpt):
                 log.info(f"Resuming training from checkpoint: {resume_ckpt}")
                 # 从检查点中加载 WandB 的 id
                 wandb_id = load_run_id_from_checkpoint(resume_ckpt)
                 cfg.wandb_id = wandb_id
                 cfg.wandb_resume = 'must'
+                cfg.resume_from_checkpoint = resume_ckpt  # 更新配置中的路径
             else:
                 log.error("Checkpoint path does not exist. Starting training from scratch.")
                 cfg.wandb_id = None
                 cfg.wandb_resume = False
+                cfg.resume_from_checkpoint = None  # 确保不使用检查点
         else:
             cfg.wandb_id = None
             cfg.wandb_resume = False
+            cfg.resume_from_checkpoint = None  # 当 resume=False 时，将检查点路径设置为 None
 
         # 初始化日志记录器
         logger: List[LightningLoggerBase] = []
@@ -177,14 +182,23 @@ def train(cfg: DictConfig) -> Optional[float]:
                     logger.append(hydra.utils.instantiate(lg_conf))
 
         # 初始化训练器
-        trainer: Trainer = hydra.utils.instantiate(
-            cfg.trainer,
-            callbacks=callbacks,
-            logger=logger,
-            _convert_="partial",
-            plugins=plugs,
-            resume_from_checkpoint=cfg.get('resume_from_checkpoint', None)
-        )
+        if cfg.get('resume', False):
+            trainer: Trainer = hydra.utils.instantiate(
+                cfg.trainer,
+                callbacks=callbacks,
+                logger=logger,
+                _convert_="partial",
+                plugins=plugs,
+                resume_from_checkpoint=cfg.resume_from_checkpoint
+            )
+        else:
+            trainer: Trainer = hydra.utils.instantiate(
+                cfg.trainer,
+                callbacks=callbacks,
+                logger=logger,
+                _convert_="partial",
+                plugins=plugs
+            )
         # Send some parameters from config to all lightning loggers
         log.info("Logging hyperparameters!")
         utils.log_hyperparameters(
@@ -288,13 +302,17 @@ def train(cfg: DictConfig) -> Optional[float]:
 
 
 # 自定义回调类
+
 class CustomModelCheckpoint(ModelCheckpoint):
-    def __init__(self, save_dir, save_every_n_epochs=50, *args, **kwargs):
+    def __init__(self, save_dir='checkpoints', save_every_n_epochs=5, *args, **kwargs):
+        # 获取原始工作目录
+        original_cwd = get_original_cwd()
+        # 将 save_dir 设为相对于原始工作目录的路径
+        save_dir = os.path.join(original_cwd, save_dir)
         super().__init__(*args, **kwargs)
         self.save_dir = save_dir
         self.save_every_n_epochs = save_every_n_epochs
         os.makedirs(self.save_dir, exist_ok=True)
-
     def on_epoch_end(self, trainer, pl_module):
         epoch = trainer.current_epoch
         if (epoch + 1) % self.save_every_n_epochs == 0:
@@ -303,16 +321,27 @@ class CustomModelCheckpoint(ModelCheckpoint):
             # 如果存在，则删除旧的模型文件
             if os.path.exists(filepath):
                 os.remove(filepath)
+            # 获取 WandB 的运行 ID
+            wandb_id = None
+            # 检查 pl_module.logger 是否是 WandbLogger 的实例
+            if isinstance(pl_module.logger, WandbLogger):
+                wandb_id = pl_module.logger.experiment.id
+            elif isinstance(pl_module.logger, list):
+                for logger in pl_module.logger:
+                    if isinstance(logger, WandbLogger):
+                        wandb_id = logger.experiment.id
+                        break
             # 保存新的模型文件，包括优化器和调度器状态，以及 WandB 的 id
             checkpoint = {
                 'epoch': epoch + 1,
                 'state_dict': pl_module.state_dict(),
                 'optimizer_state_dict': trainer.optimizers[0].state_dict(),
                 'lr_scheduler_state_dict': trainer.lr_schedulers[0]['scheduler'].state_dict() if trainer.lr_schedulers else None,
-                'wandb_id': pl_module.logger.experiment.id  # 保存 WandB 的 id
+                'wandb_id': wandb_id  # 保存 WandB 的 id
             }
             torch.save(checkpoint, filepath)
-            pl_module.logger.info(f"Checkpoint saved at epoch {epoch+1} to {filepath}")
+            #pl_module.logger.experiment[0].log({'checkpoint_saved': filepath})
+            #pl_module.logger.experiment[0].log(f"Checkpoint saved at epoch {epoch+1} to {filepath}")
 def load_run_id_from_checkpoint(checkpoint_path):
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
     wandb_id = checkpoint.get('wandb_id', None)

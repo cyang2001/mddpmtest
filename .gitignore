@@ -9,5 +9,5 @@ raw_data/
 Data/cache/
 Data/Test/
 Data/Train/
-checkpoint/
+checkpoints/
 save/

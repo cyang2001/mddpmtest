@@ -57,4 +57,4 @@ wandb_resume: False  # 默认不恢复 WandB 运行
 
 # 添加 resume 参数
 resume: False
-resume_from_checkpoint: null
+resume_from_checkpoint: ${data_dir}/checkpoints/model.ckpt

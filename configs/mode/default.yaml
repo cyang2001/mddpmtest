@@ -27,6 +27,7 @@ hydra:
           - datamodule.cfg.resizedEvaluation 
           - datamodule.cfg.sample_set
           - model.cfg.encoder_path
+          - resume
+          - resume_from_checkpoint 
     env_set:
       EXAMPLE_VAR: "example_value"
-
