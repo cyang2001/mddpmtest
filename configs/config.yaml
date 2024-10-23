@@ -9,11 +9,10 @@ defaults:
   - callbacks: 
     - checkpoint.yaml # set this to null if you don't want to use callbacks
 
-    
   - logger: # set logger here or use command line (e.g. `python run.py logger=wandb`)
     - wandb
     - csv 
-  - experiment: DDPM.yaml # set experiment here or use command line (e.g. `python run.py experiment=DDPM`) 
+  - experiment: mDDPM/mDDPM.yaml # set experiment here or use command line (e.g. `python run.py experiment=DDPM`) 
   - mode: default.yaml
 
   # enable color logging
@@ -58,3 +57,5 @@ wandb_resume: False  # 默认不恢复 WandB 运行
 # 添加 resume 参数
 resume: False
 resume_from_checkpoint: ${data_dir}/checkpoints/model.ckpt
+
+train: True
