@@ -108,7 +108,7 @@ def get_freq_image(slice):
     high_pass_args = {'size': 2}
     LL_filtered, LH_filtered, HL_filtered, HH_filtered = apply_filter_to_wavelet(
     coeffs, low_pass_filter, high_pass_filter, low_pass_args, high_pass_args
-)
+    )
     coeffs_filtered = (LL_filtered, (LH_filtered, HL_filtered, HH_filtered))
     reconstructed_image = pywt.waverec2(coeffs_filtered, 'haar', mode='symmetric')
     cropped_reconstructed_image = crop_image_to_original(reconstructed_image, slice.shape)
@@ -306,8 +306,8 @@ class DDPM_2D(LightningModule):
             array_2d = np.asarray(slice.cpu())
 
             # freq = get_freq_image(array_2d)
-            # freq = get_freq_image_defaut(array_2d)
-            freq = get_freq_multi_scale(self, array_2d)
+            freq = get_freq_image_defaut(array_2d)
+            # freq = get_freq_multi_scale(self, array_2d)
             array_2d_mask = (true_mask_slice.cpu())
             col_sums = array_2d_mask.sum(axis=0)
             row_sums = array_2d_mask.sum(axis=1)
