@@ -179,12 +179,12 @@ def apply_filters_to_multi_scale_coeffs(coeffs, low_pass_filter, high_pass_filte
             filtered_coeffs.append(filtered_subbands)
     return filtered_coeffs
 
-def get_freq_multi_scale(self, image, wavelet='haar', levels=3):
+def get_freq_multi_scale(self, image, wavelet='coif5', levels=2):
     coeffs = multi_scale_wavelet_transform(image, wavelet, levels)
     low_pass_filter = apply_gaussian_filter
     high_pass_filter = apply_uniform_filter
-    low_pass_args = {'sigma': 1}
-    high_pass_args = {'size': 2}
+    low_pass_args = {'sigma': 0.5}
+    high_pass_args = {'size': 3}
     filtered_coeffs = apply_filters_to_multi_scale_coeffs(coeffs, low_pass_filter, high_pass_filter, low_pass_args, high_pass_args)
     reconstructed_image = pywt.waverec2(filtered_coeffs, wavelet, mode='symmetric')
     cropped_reconstructed_image = crop_image_to_original(reconstructed_image, image.shape)
@@ -306,8 +306,8 @@ class DDPM_2D(LightningModule):
             array_2d = np.asarray(slice.cpu())
 
             # freq = get_freq_image(array_2d)
-            freq = get_freq_image_defaut(array_2d)
-            # freq = get_freq_multi_scale(self, array_2d)
+            # freq = get_freq_image_defaut(array_2d)
+            freq = get_freq_multi_scale(self, array_2d)
             array_2d_mask = (true_mask_slice.cpu())
             col_sums = array_2d_mask.sum(axis=0)
             row_sums = array_2d_mask.sum(axis=1)
@@ -321,8 +321,8 @@ class DDPM_2D(LightningModule):
             max_patch_len = int((total_rows / 10) * 1.8)
             min_patch_len = int(max_patch_len / 2)
 
-            num_of_patches = random.randint(0, 5)
-
+            # num_of_patches = random.randint(0, 5)
+            num_of_patches = random.randint(0, 7)
             for k in range(num_of_patches):
                 patch_height = random.randint(min_patch_len, max_patch_len)
                 patch_width = random.randint(min_patch_len, max_patch_len)

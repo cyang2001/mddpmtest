@@ -5,19 +5,66 @@ from math import floor
 from numba import njit, prange
 from torch.nn import functional as F
 import numpy as np
+from src.utils import utils
 def gen_noise(cfg,shape):   
-
     if cfg.noisetype == 'simplex':
         simplex = Simplex_CLASS()
         ns = generate_simplex_noise(simplex, torch.zeros(shape[0],shape[1],shape[2],shape[3]), 1, random_param=False).half()
-    if cfg.noisetype == 'ggd':
+    elif cfg.noisetype == 'ggd':
         alpha = cfg.get('alpha', 1.5)
         beta = cfg.get('beta', 1.5)
-        ns = generalized_gaussian_noise(alpha, beta, shape).half()
+        # ns = generalized_gaussian_noise(alpha, beta, shape).half()
+        ns = generalized_gaussian_noise_with_filter(alpha, beta, shape).half()
     else: 
         raise ValueError('Noise type not recognized')
     return ns
 
+def generalized_gaussian_noise_with_filter(alpha, beta, shape=(1000,)):
+    # 生成GGD噪声
+    gaussian_dist = torch.distributions.normal.Normal(0, beta)
+    max_pdf_val = ggd_pdf(torch.tensor(0.0), alpha, beta)
+    samples = torch.empty(shape)
+    num_samples = np.prod(shape)
+    samples_generated = 0
+
+    while samples_generated < num_samples:
+        x = gaussian_dist.sample(sample_shape=shape)
+        pdf_val = ggd_pdf(x, alpha, beta)
+        u = torch.rand(shape) * max_pdf_val
+        accept = u <= pdf_val
+        accepted_samples = x[accept]
+        num_accepted = accepted_samples.numel()
+        if samples_generated + num_accepted > num_samples:
+            accepted_samples = accepted_samples[:num_samples - samples_generated]
+        samples.view(-1)[samples_generated:samples_generated + num_accepted] = accepted_samples
+        samples_generated += num_accepted
+
+    # 对噪声进行高斯滤波
+    samples = samples.view(shape)
+    samples = samples.numpy()
+    from scipy.ndimage import gaussian_filter
+    samples_filtered = gaussian_filter(samples, sigma=1)
+    return torch.from_numpy(samples_filtered)
+
+def generate_simplex_noise_with_ggd(
+    Simplex_instance, x, t, random_param=False, octave=6, persistence=0.8, frequency=64,
+    in_channels=1, alpha=1.5, beta=1.5
+):
+    noise = torch.empty(x.shape).to(x.device)
+    Simplex_instance.newSeed()
+    # 生成Simplex噪声
+    simplex_noise = torch.unsqueeze(
+        torch.from_numpy(
+            Simplex_instance.rand_2d_octaves(
+                x.shape[-2:], octave, persistence, frequency
+            )
+        ).to(x.device), 0
+    ).repeat(x.shape[0], 1, 1, 1)
+    # 将Simplex噪声值映射到GGD分布
+    from scipy.stats import gennorm
+    simplex_noise = simplex_noise.cpu().numpy()
+    ggd_noise = gennorm.ppf((simplex_noise + 1) / 2, beta)
+    return torch.from_numpy(ggd_noise).to(x.device)
 
 # this comes from the AnoDDPM paper / repository
 def generate_simplex_noise(

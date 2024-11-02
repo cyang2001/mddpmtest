@@ -4,7 +4,7 @@
 defaults:
   - _self_
   - trainer: default.yaml
-  - model: DDPM_2D.yaml
+  - model: mDDPM.yaml
   - datamodule: IXI.yaml
   - callbacks: 
     - checkpoint.yaml # set this to null if you don't want to use callbacks

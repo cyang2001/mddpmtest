@@ -24,6 +24,7 @@ model:
     OpenaiUnet: True # use openai unet
     conv_resample: True
     noisetype: ggd
+    # noisetype: simplex
     alpha: 1.5
     beta: 1.5
     dropout_unet: 0.0
@@ -40,7 +41,7 @@ logger:
 ckpt_path: best
 
 trainer:
-  max_epochs: 1200
+  max_epochs: 300
   precision: 32
 
 name : mDDPM

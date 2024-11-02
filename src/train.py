@@ -178,7 +178,7 @@ def train(cfg: DictConfig) -> Optional[float]:
             validation_metrics = trainer.callback_metrics
         else:
             # Load model state dict from checkpoint
-            model_ckpt_path = cfg.get('model_checkpoint_path', 'path/to/your/checkpoint')
+            model_ckpt_path = cfg.get('model_checkpoint_path')
             model.load_state_dict(torch.load(model_ckpt_path)['state_dict'])
 
         # Logging
