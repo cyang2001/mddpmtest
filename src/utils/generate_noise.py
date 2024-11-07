@@ -14,7 +14,8 @@ def gen_noise(cfg,shape):
         alpha = cfg.get('alpha', 1.5)
         beta = cfg.get('beta', 1.5)
         # ns = generalized_gaussian_noise(alpha, beta, shape).half()
-        ns = generalized_gaussian_noise_with_filter(alpha, beta, shape).half()
+        # ns = generalized_gaussian_noise_with_filter(alpha, beta, shape).half()
+        ns = generate_simplex_noise_with_ggd(Simplex_CLASS(), torch.zeros(shape[0],shape[1],shape[2],shape[3]), 1, random_param=False, octave=6, persistence=0.8, frequency=64, in_channels=1, alpha=alpha, beta=beta).half()
     else: 
         raise ValueError('Noise type not recognized')
     return ns
@@ -63,8 +64,16 @@ def generate_simplex_noise_with_ggd(
     # 将Simplex噪声值映射到GGD分布
     from scipy.stats import gennorm
     simplex_noise = simplex_noise.cpu().numpy()
-    ggd_noise = gennorm.ppf((simplex_noise + 1) / 2, beta)
+    # 确保在[0, 1]区间
+    simplex_noise = np.clip((simplex_noise + 1) / 2, 1e-6, 1 - 1e-6)
+    ggd_noise = gennorm.ppf(simplex_noise, beta)
+    
+    # 检查NaN和无穷大
+    if np.isnan(ggd_noise).any() or np.isinf(ggd_noise).any():
+        raise ValueError("Generated GGD noise contains NaN or infinite values.")
+    
     return torch.from_numpy(ggd_noise).to(x.device)
+
 
 # this comes from the AnoDDPM paper / repository
 def generate_simplex_noise(
