@@ -235,7 +235,7 @@ class DDPM_2D(LightningModule):
             num_classes=None,
             use_checkpoint=True,
             use_fp16=True,
-            num_heads=cfg.get('num_heads', 1),
+            num_heads=cfg.get('num_heads', 4),
             num_head_channels=64,
             num_heads_upsample=-1,
             use_scale_shift_norm=True,

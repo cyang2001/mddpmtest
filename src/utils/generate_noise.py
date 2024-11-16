@@ -14,8 +14,8 @@ def gen_noise(cfg,shape):
         alpha = cfg.get('alpha', 1.5)
         beta = cfg.get('beta', 1.5)
         # ns = generalized_gaussian_noise(alpha, beta, shape).half()
-        # ns = generalized_gaussian_noise_with_filter(alpha, beta, shape).half()
-        ns = generate_simplex_noise_with_ggd(Simplex_CLASS(), torch.zeros(shape[0],shape[1],shape[2],shape[3]), 1, random_param=False, octave=6, persistence=0.8, frequency=64, in_channels=1, alpha=alpha, beta=beta).half()
+        ns = generalized_gaussian_noise_with_filter(alpha, beta, shape).half()
+        # ns = generate_simplex_noise_with_ggd(Simplex_CLASS(), torch.zeros(shape[0],shape[1],shape[2],shape[3]), 1, random_param=False, octave=6, persistence=0.8, frequency=64, in_channels=1, alpha=alpha, beta=beta).half()
     else: 
         raise ValueError('Noise type not recognized')
     return ns
