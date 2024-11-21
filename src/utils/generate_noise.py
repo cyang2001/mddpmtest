@@ -9,7 +9,6 @@ from math import floor
 from numba import njit, prange
 
 def gen_noise(cfg, shape):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if cfg.noisetype == 'simplex':
         simplex = Simplex_CLASS()
         ns = generate_simplex_noise_with_ggd(
@@ -20,29 +19,29 @@ def gen_noise(cfg, shape):
             frequency=cfg.get('frequency', 64),
             alpha=cfg.get('alpha', 1.5),
             beta=cfg.get('beta', 1.5)
-        ).half().to(device)
+        ).half()
     elif cfg.noisetype == 'ggd':
         ns = generate_spatially_consistent_ggd_noise(
             shape,
             alpha=cfg.get('alpha', 1.5),
             beta=cfg.get('beta', 1.5)
-        ).half().to(device)
+        ).half()
     elif cfg.noisetype == 'laplace':
         ns = generate_spatially_consistent_laplace_noise(
             shape,
             scale=cfg.get('noise_scale', 1.0)
-        ).half().to(device)
+        ).half()
     elif cfg.noisetype == 'perlin':
         ns = generate_spatially_consistent_perlin_noise(
             shape,
             scale=cfg.get('noise_scale', 1.0),
             res=cfg.get('perlin_res', (4, 4))
-        ).half().to(device)
+        ).half()
     elif cfg.noisetype == 'gmrf':
         ns = generate_gmrf_noise(
             shape,
             sigma=cfg.get('gmrf_sigma', 1.0)
-        ).half().to(device)
+        ).half()
     else:
         raise ValueError(f"Noise type '{cfg.noisetype}' not recognized or requires input_image.")
     return ns
