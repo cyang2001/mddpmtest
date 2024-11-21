@@ -494,10 +494,8 @@ class GaussianDiffusion(nn.Module):
             c = ((1 - alpha_next) - sigma ** 2).sqrt()
 
             if time_next > 0:
-                if self.cfg.noisetype =='simplex': 
-                    noise = gen_noise(self.cfg, shape).to(device)
-                if self.cfg.noisetype == 'ggd':
-                    noise = gen_noise(self.cfg, shape).to(device)
+                if self.cfg.get('noisetype') is not None:
+                    noise = gen_noise(self.cfg, input.shape).to(self.device)
                 else:
                     noise = torch.randn_like(img)
             else: 

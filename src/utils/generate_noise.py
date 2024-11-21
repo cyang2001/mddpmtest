@@ -1,79 +1,143 @@
-import torch 
+import torch
 import random
+import numpy as np
+from scipy.ndimage import gaussian_filter
+from scipy.stats import gennorm
+from typing import Tuple
 from ctypes import c_int64
 from math import floor
 from numba import njit, prange
-from torch.nn import functional as F
-import numpy as np
-from src.utils import utils
-def gen_noise(cfg,shape):   
+
+def gen_noise(cfg, shape):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if cfg.noisetype == 'simplex':
         simplex = Simplex_CLASS()
-        ns = generate_simplex_noise(simplex, torch.zeros(shape[0],shape[1],shape[2],shape[3]), 1, random_param=False).half()
+        ns = generate_simplex_noise_with_ggd(
+            simplex,
+            shape,
+            octave=cfg.get('octave', 6),
+            persistence=cfg.get('persistence', 0.8),
+            frequency=cfg.get('frequency', 64),
+            alpha=cfg.get('alpha', 1.5),
+            beta=cfg.get('beta', 1.5)
+        ).half().to(device)
     elif cfg.noisetype == 'ggd':
-        alpha = cfg.get('alpha', 1.5)
-        beta = cfg.get('beta', 1.5)
-        # ns = generalized_gaussian_noise(alpha, beta, shape).half()
-        # ns = generalized_gaussian_noise_with_filter(alpha, beta, shape).half()
-        ns = generate_simplex_noise_with_ggd(Simplex_CLASS(), torch.zeros(shape[0],shape[1],shape[2],shape[3]), 1, random_param=False, octave=6, persistence=0.8, frequency=64, in_channels=1, alpha=alpha, beta=beta).half()
-    else: 
-        raise ValueError('Noise type not recognized')
+        ns = generate_spatially_consistent_ggd_noise(
+            shape,
+            alpha=cfg.get('alpha', 1.5),
+            beta=cfg.get('beta', 1.5)
+        ).half().to(device)
+    elif cfg.noisetype == 'laplace':
+        ns = generate_spatially_consistent_laplace_noise(
+            shape,
+            scale=cfg.get('noise_scale', 1.0)
+        ).half().to(device)
+    elif cfg.noisetype == 'perlin':
+        ns = generate_spatially_consistent_perlin_noise(
+            shape,
+            scale=cfg.get('noise_scale', 1.0),
+            res=cfg.get('perlin_res', (4, 4))
+        ).half().to(device)
+    elif cfg.noisetype == 'gmrf':
+        ns = generate_gmrf_noise(
+            shape,
+            sigma=cfg.get('gmrf_sigma', 1.0)
+        ).half().to(device)
+    else:
+        raise ValueError(f"Noise type '{cfg.noisetype}' not recognized or requires input_image.")
     return ns
 
-def generalized_gaussian_noise_with_filter(alpha, beta, shape=(1000,)):
-    # 生成GGD噪声
-    gaussian_dist = torch.distributions.normal.Normal(0, beta)
-    max_pdf_val = ggd_pdf(torch.tensor(0.0), alpha, beta)
-    samples = torch.empty(shape)
-    num_samples = np.prod(shape)
-    samples_generated = 0
+def generate_spatially_consistent_laplace_noise(shape, scale=1.0):
+    noise = torch.distributions.Laplace(0.0, scale).sample(shape)
+    noise_np = noise.cpu().numpy()
+    sigma = 1
+    noise_filtered = gaussian_filter(noise_np, sigma=sigma)
+    noise_filtered_tensor = torch.from_numpy(noise_filtered).to(noise.device)
+    return noise_filtered_tensor
 
-    while samples_generated < num_samples:
-        x = gaussian_dist.sample(sample_shape=shape)
-        pdf_val = ggd_pdf(x, alpha, beta)
-        u = torch.rand(shape) * max_pdf_val
-        accept = u <= pdf_val
-        accepted_samples = x[accept]
-        num_accepted = accepted_samples.numel()
-        if samples_generated + num_accepted > num_samples:
-            accepted_samples = accepted_samples[:num_samples - samples_generated]
-        samples.view(-1)[samples_generated:samples_generated + num_accepted] = accepted_samples
-        samples_generated += num_accepted
-
-    # 对噪声进行高斯滤波
-    samples = samples.view(shape)
-    samples = samples.numpy()
-    from scipy.ndimage import gaussian_filter
-    samples_filtered = gaussian_filter(samples, sigma=1)
-    return torch.from_numpy(samples_filtered)
+def generate_spatially_consistent_ggd_noise(shape, alpha=1.5, beta=1.5):
+    noise = torch.randn(shape)
+    noise_np = noise.cpu().numpy()
+    # 数值稳定性检查
+    max_val = noise_np.max()
+    min_val = noise_np.min()
+    denom = max_val - min_val if max_val != min_val else 1e-6
+    noise_cdf = (noise_np - min_val) / denom
+    ggd_noise = gennorm.ppf(noise_cdf, beta)
+    sigma = 1
+    ggd_noise_filtered = gaussian_filter(ggd_noise, sigma=sigma)
+    ggd_noise_tensor = torch.from_numpy(ggd_noise_filtered).to(noise.device)
+    return ggd_noise_tensor
 
 def generate_simplex_noise_with_ggd(
-    Simplex_instance, x, t, random_param=False, octave=6, persistence=0.8, frequency=64,
-    in_channels=1, alpha=1.5, beta=1.5
+    simplex_instance, shape, octave=6, persistence=0.8, frequency=64,
+    alpha=1.5, beta=1.5
 ):
-    noise = torch.empty(x.shape).to(x.device)
-    Simplex_instance.newSeed()
-    # 生成Simplex噪声
-    simplex_noise = torch.unsqueeze(
-        torch.from_numpy(
-            Simplex_instance.rand_2d_octaves(
-                x.shape[-2:], octave, persistence, frequency
-            )
-        ).to(x.device), 0
-    ).repeat(x.shape[0], 1, 1, 1)
-    # 将Simplex噪声值映射到GGD分布
-    from scipy.stats import gennorm
-    simplex_noise = simplex_noise.cpu().numpy()
-    # 确保在[0, 1]区间
-    simplex_noise = np.clip((simplex_noise + 1) / 2, 1e-6, 1 - 1e-6)
-    ggd_noise = gennorm.ppf(simplex_noise, beta)
-    
-    # 检查NaN和无穷大
-    if np.isnan(ggd_noise).any() or np.isinf(ggd_noise).any():
-        raise ValueError("Generated GGD noise contains NaN or infinite values.")
-    
-    return torch.from_numpy(ggd_noise).to(x.device)
+    batch_size, channels, height, width = shape
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    simplex_instance.newSeed()
+    simplex_noise = torch.from_numpy(
+        simplex_instance.rand_2d_octaves(
+            (height, width), octave, persistence, frequency
+        )
+    ).unsqueeze(0).repeat(batch_size, 1, 1, 1).to(device)
+    simplex_noise_np = simplex_noise.cpu().numpy()
+    simplex_noise_np = np.clip((simplex_noise_np + 1) / 2, 1e-6, 1 - 1e-6)
+    ggd_noise = gennorm.ppf(simplex_noise_np, beta)
+    ggd_noise_tensor = torch.from_numpy(ggd_noise).to(device)
+    return ggd_noise_tensor
 
+def generate_spatially_consistent_perlin_noise(shape, scale=1.0, res=(4, 4)):
+    batch_size, channels, height, width = shape
+    perlin_noise = torch.zeros(shape)
+    for i in range(batch_size):
+        noise = generate_perlin_noise_2d((height, width), res)
+        perlin_noise[i, 0, :, :] = noise * scale
+    return perlin_noise
+
+def generate_gmrf_noise(shape, sigma=1.0):
+    noise = torch.randn(shape)
+    noise_np = noise.cpu().numpy()
+    gmrf_noise = np.empty_like(noise_np)
+    for i in range(noise_np.shape[0]):
+        for j in range(noise_np.shape[1]):
+            gmrf_noise[i, j] = gaussian_filter(noise_np[i, j], sigma=sigma)
+    gmrf_noise_tensor = torch.from_numpy(gmrf_noise).to(noise.device)
+    return gmrf_noise_tensor
+
+def generate_perlin_noise_2d(shape: Tuple[int, int], res: Tuple[int, int]) -> torch.Tensor:
+    def f(t):
+        return 6 * t**5 - 15 * t**4 + 10 * t**3
+
+    delta = (res[0] / shape[0], res[1] / shape[1])
+    d = (shape[0] // res[0], shape[1] // res[1])
+    grid = torch.stack(torch.meshgrid(
+        torch.arange(0, res[0]+1, dtype=torch.float32) / res[0],
+        torch.arange(0, res[1]+1, dtype=torch.float32) / res[1]
+    ), dim=-1)
+
+    angles = 2 * np.pi * torch.rand(res[0]+1, res[1]+1)
+    gradients = torch.stack((torch.cos(angles), torch.sin(angles)), dim=-1)
+
+    # 修正维度匹配的问题
+    g00 = gradients[:-1, :-1]
+    g10 = gradients[1:, :-1]
+    g01 = gradients[:-1, 1:]
+    g11 = gradients[1:, 1:]
+
+    # 计算插值
+    n00 = (grid[:-1, :-1] * g00).sum(-1)
+    n10 = (grid[1:, :-1] * g10).sum(-1)
+    n01 = (grid[:-1, 1:] * g01).sum(-1)
+    n11 = (grid[1:, 1:] * g11).sum(-1)
+
+    t = f(torch.linspace(0, 1, d[0], device=grid.device).unsqueeze(1))
+    s = f(torch.linspace(0, 1, d[1], device=grid.device).unsqueeze(0))
+
+    n0 = n00 + t * (n10 - n00)
+    n1 = n01 + t * (n11 - n01)
+    perlin = n0 + s * (n1 - n0)
+    return perlin
 
 # this comes from the AnoDDPM paper / repository
 def generate_simplex_noise(

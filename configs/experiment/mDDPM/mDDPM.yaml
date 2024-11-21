@@ -23,10 +23,12 @@ model:
     residualmode: l1
     OpenaiUnet: True # use openai unet
     conv_resample: True
-    noisetype: ggd
-    # noisetype: simplex
-    alpha: 1.5
-    beta: 1.5
+    noisetype : 'poisson'  # 'laplace'，'ggd'，'simplex'，'poisson'，'speckle'，'perlin'，'gmrf'
+    noise_scale : 1.0      # 噪声的尺度参数
+    alpha : 1.5            # GGD 分布的参数 alpha
+    beta : 1.5             # GGD 分布的参数 beta
+    perlin_res : (4, 4)    # Perlin 噪声的分辨率
+    gmrf_sigma : 1.0       # GMRF 噪声的高斯核标准差
     dropout_unet: 0.0
     patch_size: 48 # size of the patches
     grid_boxes: True # sample boxes from a fixed grid
