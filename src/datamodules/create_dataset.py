@@ -152,37 +152,48 @@ class preload_wrapper(Dataset):
 
 
 class vol2slice(Dataset):
-    def __init__(self, ds, cfg, onlyBrain=False, slice=None, seq_slices=None):
+    def __init__(self, ds, cfg, onlyBrain=False, slice=None, seq_slices=None, only_tumor=False):
         self.ds = ds
         self.onlyBrain = onlyBrain
         self.slice = slice
         self.seq_slices = seq_slices
+        self.only_tumor = only_tumor
         self.counter = 0
         self.ind = None
         self.cfg = cfg
         log.info(f"vol2slice initialized with self.ds type: {type(self.ds)}")
+
     def __len__(self):
         return len(self.ds)
 
     def __getitem__(self, index):
         subject = self.ds.__getitem__(index)
+
         if 'orig' not in subject:
             log.error(f"'orig' key missing in subject at index {index}")
             log.error(f"Subject keys: {list(subject.keys())}")
             raise KeyError("'orig' key missing in subject")
+
+        # Determine valid slice indices based on brain mask
         if self.onlyBrain:
             start_ind = None
+            stop_ind = None
             for i in range(subject['vol'].data.shape[-1]):
-                if subject['mask'].data[0, :, :, i].any() and start_ind is None:  # only do this once
-                    start_ind = i
-                if not subject['mask'].data[0, :, :,
-                       i].any() and start_ind is not None:  # only do this when start_ind is set
-                    stop_ind = i
+                mask_slice = subject['mask'].data[0, :, :, i]
+                if mask_slice.any():
+                    if start_ind is None:
+                        start_ind = i
+                    stop_ind = i  # Update stop_ind to the last valid slice
+            if start_ind is None or stop_ind is None:
+                log.warning(f"No brain slices found in subject at index {index}")
+                return self.__getitem__((index + 1) % len(self.ds))
             low = start_ind
-            high = stop_ind
+            high = stop_ind + 1  # Include the last valid slice
         else:
             low = 0
             high = subject['vol'].data.shape[-1]
+
+        # Select slice index
         if self.slice is not None:
             ind = self.slice
             if self.seq_slices is not None:
@@ -199,27 +210,52 @@ class vol2slice(Dataset):
                 self.counter += 1
             else:
                 ind = torch.randint(low, high, size=(1,)).item()
-                
+
         ind_tensor = torch.tensor([ind])
-        # 更新 `subject` 的数据
+
+        # Check if the slice contains tumor (for datasets with segmentation)
+        contains_tumor = False
+        if 'seg' in subject:
+            seg_slice = subject['seg'].data[..., ind]
+            contains_tumor = seg_slice.any()
+        else:
+            # If no 'seg' field, assume it's a healthy subject
+            contains_tumor = False
+
+        # Apply 'only_tumor' filter
+        if self.only_tumor:
+            if not contains_tumor:
+                # Current slice does not contain tumor, try next
+                return self.__getitem__((index + 1) % len(self.ds))
+        else:
+            if contains_tumor:
+                # Current slice contains tumor, but we only want healthy slices
+                return self.__getitem__((index + 1) % len(self.ds))
+
+        # Update subject's data to only include the selected slice
         subject['ind'] = ind
         subject['vol'].data = subject['vol'].data[..., ind_tensor]
-        subject['mask'].data = subject['mask'].data[..., ind_tensor]
         subject['orig'].data = subject['orig'].data[..., ind_tensor]
+        if 'mask' in subject:
+            subject['mask'].data = subject['mask'].data[..., ind_tensor]
+        if 'seg' in subject:
+            subject['seg'].data = subject['seg'].data[..., ind_tensor]
 
-        # 检查掩码是否全为零
-        if not subject['mask'].data.any() or subject['mask'].data.sum() < 600:
-            # 掩码全为零，尝试下一个索引
-            return self.__getitem__((index + 1) % len(self.ds))
+        # Check if the mask is valid (not all zeros)
+        if 'mask' in subject:
+            if not subject['mask'].data.any() or subject['mask'].data.sum() < 600:
+                # Mask is invalid, try next slice
+                return self.__getitem__((index + 1) % len(self.ds))
 
         return subject
+
     @property
     def subjects(self):
         try:
-            return self.ds.subjects  # 尝试直接访问 subjects 属性
+            return self.ds.subjects  # Try accessing subjects attribute directly
         except AttributeError:
             try:
-                return self.ds._subjects  # 如果失败，尝试访问 _subjects 属性
+                return self.ds._subjects  # Fallback to _subjects attribute
             except AttributeError:
                 log.error(f"'subjects' or '_subjects' attribute not found in {type(self.ds)}")
                 raise

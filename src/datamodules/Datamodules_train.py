@@ -128,32 +128,40 @@ class CombinedDataModule(LightningDataModule):
         self.brats_train_subject_paths = self.load_or_process_brats(self.cfg.path.Brats21.IDs.train, train_cache_dir)
         self.brats_val_subject_paths = self.load_or_process_brats(self.cfg.path.Brats21.IDs.val, val_cache_dir)
 
-        # 创建 LazyBraTSDataset 实例
+        # 创建 BraTS21 数据集
         brats_train_dataset = LazyBraTSDataset(self.brats_train_subject_paths, transform=get_transform(self.cfg))
         brats_val_dataset = LazyBraTSDataset(self.brats_val_subject_paths, transform=get_transform(self.cfg))
-        brats_train_dataset = vol2slice(brats_train_dataset, self.cfg)
-        brats_val_dataset = vol2slice(brats_val_dataset, self.cfg)
 
-        print(f"Type of self.ixi_module.train: {type(self.ixi_module.train)}")
-        print(f"Type of self.ixi_module.val: {type(self.ixi_module.val)}")
-        # 合并 IXI 数据集和 BraTS21 数据集
-        combined_train_dataset = ConcatDataset([self.ixi_module.train, brats_train_dataset])
-        combined_val_dataset = ConcatDataset([self.ixi_module.val, brats_val_dataset])
-        self.train = combined_train_dataset
-        self.val = combined_val_dataset
-        log.info(f"Combined dataset setup completed. Train dataset size: {len(self.train)}, Validation dataset size: {len(self.val)}")
+        # 将 BraTS21 数据集分为健康切片和异常切片
+        brats_train_healthy_slices = vol2slice(brats_train_dataset, self.cfg, only_tumor=False)
+        brats_train_tumor_slices = vol2slice(brats_train_dataset, self.cfg, only_tumor=True)
+        brats_val_healthy_slices = vol2slice(brats_val_dataset, self.cfg, only_tumor=False)
+        brats_val_tumor_slices = vol2slice(brats_val_dataset, self.cfg, only_tumor=True)
+
+        # 合并 IXI 数据集和 BraTS21 健康切片
+        combined_train_healthy_dataset = ConcatDataset([self.ixi_module.train, brats_train_healthy_slices])
+        combined_val_healthy_dataset = ConcatDataset([self.ixi_module.val, brats_val_healthy_slices])
+
+        self.train_healthy = combined_train_healthy_dataset
+        self.train_tumor = brats_train_tumor_slices  # 异常切片数据集
+        self.val_healthy = combined_val_healthy_dataset
+        self.val_tumor = brats_val_tumor_slices  # 异常切片数据集
+
+        log.info(f"Combined dataset setup completed. Train healthy dataset size: {len(self.train_healthy)}, Train tumor dataset size: {len(self.train_tumor)}")
     def train_dataloader(self) -> None:
-        return DataLoader(self.train, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers,
+        return DataLoader(self.train_healthy, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers,
                                 pin_memory=True, shuffle=True, drop_last=self.cfg.get('droplast', False), collate_fn=custom_collate_fn)
     def val_dataloader(self) -> None:
-        return DataLoader(self.val, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers,
+        return DataLoader(self.val_healthy, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers,
                               pin_memory=True, shuffle=False, collate_fn=custom_collate_fn)
     # 这里需要改成两个数据集合并的验证集
     def val_eval_dataloader(self):
         return DataLoader(self.ixi_module.val_eval, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers, pin_memory=True, shuffle=False, collate_fn=custom_collate_fn)
     def test_eval_dataloader(self):
         return DataLoader(self.ixi_module.test_eval, batch_size=1, num_workers=self.cfg.num_workers, pin_memory=True, shuffle=False, collate_fn=custom_collate_fn)
-        
+    def train_tumor_dataloader(self):
+        return DataLoader(self.train_tumor, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers,
+                        pin_memory=True, shuffle=True, drop_last=self.cfg.get('droplast', False), collate_fn=custom_collate_fn)
 
     def load_or_process_brats(self, csv_path, cache_dir):
         index_file_path = os.path.join(cache_dir, 'subjects_index.pkl')
@@ -229,47 +237,56 @@ class CombinedDataModule(LightningDataModule):
                     log.warning(f"Failed to load image or segmentation for: {sub.img_path}")
                     continue
 
-                non_tumor_slices = []
-
+                # 同时保留健康和异常的切片
                 for slice_index in range(seg_img.data.shape[-1]):
                     unique_id = f"{sub.img_name}_slice_{slice_index}"
                     if unique_id in processed_ids:
                         log.warning(f"Duplicate slice detected: {unique_id}, skipping...")
                         continue
 
-                    if not seg_img.data[..., slice_index].any():
-                        non_tumor_slices.append({
-                            'vol': vol_img.data[..., slice_index],
-                            'mask': mask_img.data[..., slice_index] if mask_img else None,
-                            'slice_index': slice_index
-                        })
-                        processed_ids.add(unique_id)
+                    slice_seg = seg_img.data[..., slice_index]
+                    contains_tumor = slice_seg.any()
 
-                if sub.img_name not in patient_slices:
-                    patient_slices[sub.img_name] = {'vol': [], 'mask': []}
+                    slice_data = {
+                        'vol': vol_img.data[..., slice_index],
+                        'mask': mask_img.data[..., slice_index] if mask_img else None,
+                        'seg': slice_seg,
+                        'slice_index': slice_index,
+                        'contains_tumor': contains_tumor
+                    }
+                    processed_ids.add(unique_id)
 
-                for slice_data in non_tumor_slices:
-                    patient_slices[sub.img_name]['vol'].append(slice_data['vol'])
-                    if slice_data['mask'] is not None:
-                        patient_slices[sub.img_name]['mask'].append(slice_data['mask'])
+                    if sub.img_name not in patient_slices:
+                        patient_slices[sub.img_name] = {'slices': []}
+
+                    patient_slices[sub.img_name]['slices'].append(slice_data)
 
             except Exception as e:
                 log.error(f"Error processing subject {sub.img_name}: {e}")
                 continue
 
-        for patient_id, slices in patient_slices.items():
-            vol_3d = torch.stack(slices['vol'], dim=-1).float()
-            mask_3d = torch.stack(slices['mask'], dim=-1) if slices['mask'] else None
+        for patient_id, data in patient_slices.items():
+            slices = data['slices']
+            vol_list = [s['vol'] for s in slices]
+            mask_list = [s['mask'] for s in slices if s['mask'] is not None]
+            seg_list = [s['seg'] for s in slices]
+            contains_tumor_list = [s['contains_tumor'] for s in slices]
+
+            vol_3d = torch.stack(vol_list, dim=-1).float()
+            mask_3d = torch.stack(mask_list, dim=-1) if mask_list else None
+            seg_3d = torch.stack(seg_list, dim=-1)
 
             subject_dict = {
                 'orig': tio.ScalarImage(tensor=vol_3d),
                 'vol': tio.ScalarImage(tensor=vol_3d.clone()),
+                'seg': tio.LabelMap(tensor=seg_3d),
                 'age': sub.age,
-                'ID': patient_id,  # 确保 ID 唯一
+                'ID': patient_id,
                 'label': sub.label,
                 'Dataset': sub.setname,
                 'stage': sub.settype,
-                'path': sub.img_path
+                'path': sub.img_path,
+                'contains_tumor_list': contains_tumor_list  # 添加此字段
             }
 
             if mask_3d is not None:

@@ -14,6 +14,7 @@ import torchio as tio
 from src.utils.patch_sampling import BoxSampler
 from src.utils.generate_noise import gen_noise
 from scipy.ndimage import gaussian_filter, uniform_filter
+import SimpleITK as sitk
 def get_wavelet_components(slice, wavelet='bior1.3', level=1):
     """
     进行小波变换，获取小波系数
@@ -269,6 +270,9 @@ class DDPM_2D(LightningModule):
         self.prefix = prefix
 
         self.save_hyperparameters()
+        
+        self.train_tumor_dataloader = data_module.train_tumor_dataloader
+        
 
     def forward(self):
         return None
@@ -339,7 +343,8 @@ class DDPM_2D(LightningModule):
         self.log(f'{self.prefix}train/Loss', loss, prog_bar=False, on_step=False, on_epoch=True,
                 batch_size=input.shape[0], sync_dist=True)
         return {"loss": loss}
-
+    def training_step_(self, batch, batch_indx):
+        pass
     def validation_step(self, batch: Any, batch_idx: int):
 
         input = batch['vol'][tio.DATA].squeeze(-1)
@@ -506,3 +511,59 @@ class DDPM_2D(LightningModule):
 
     def update_prefix(self, prefix):
         self.prefix = prefix 
+
+    def fuse_lesion(self, healthy_slice, healthy_mask, lesion_slice, lesion_mask):
+        # 将张量转换为 numpy 数组
+        healthy_array = healthy_slice.squeeze().cpu().numpy()
+        lesion_array = lesion_slice.squeeze().cpu().numpy()
+        lesion_mask_array = lesion_mask.squeeze().cpu().numpy()
+        healthy_mask_array = healthy_mask.squeeze().cpu().numpy()
+
+        # 将数组转换为 SimpleITK 图像
+        healthy_sitk = sitk.GetImageFromArray(healthy_array)
+        lesion_sitk = sitk.GetImageFromArray(lesion_array)
+        lesion_mask_sitk = sitk.GetImageFromArray(lesion_mask_array)
+
+        # 图像配准
+        transform = self.register_2d_images(healthy_sitk, lesion_sitk)
+
+        # 应用变换到病变切片和掩码
+        lesion_sitk_registered = sitk.Resample(lesion_sitk, healthy_sitk, transform, sitk.sitkLinear, 0.0)
+        lesion_mask_sitk_registered = sitk.Resample(lesion_mask_sitk, healthy_sitk, transform, sitk.sitkNearestNeighbor, 0.0)
+
+        # 转换回 numpy 数组
+        lesion_registered = sitk.GetArrayFromImage(lesion_sitk_registered)
+        lesion_mask_registered = sitk.GetArrayFromImage(lesion_mask_sitk_registered)
+
+        # 融合病变区域
+        fused_array = healthy_array.copy()
+        valid_mask = (lesion_mask_registered > 0) & (healthy_mask_array > 0)
+        fused_array[valid_mask] = lesion_registered[valid_mask]
+
+        # 转换回张量
+        fused_slice = torch.from_numpy(fused_array).unsqueeze(0).to(self.device)
+
+        return fused_slice
+    
+    def register_2d_images(self, fixed_image, moving_image):
+        # 初始变换
+        initial_transform = sitk.CenteredTransformInitializer(
+            fixed_image,
+            moving_image,
+            sitk.AffineTransform(2),  # 2D仿射变换
+            sitk.CenteredTransformInitializerFilter.GEOMETRY
+        )
+        # 配准方法设置
+        registration_method = sitk.ImageRegistrationMethod()
+        registration_method.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
+        registration_method.SetInterpolator(sitk.sitkLinear)
+        registration_method.SetOptimizerAsRegularStepGradientDescent(
+            learningRate=1.0,
+            minStep=1e-6,
+            numberOfIterations=100,
+            gradientMagnitudeTolerance=1e-8
+        )
+        registration_method.SetInitialTransform(initial_transform, inPlace=False)
+        # 执行配准
+        final_transform = registration_method.Execute(fixed_image, moving_image)
+        return final_transform
