@@ -107,36 +107,54 @@ def generate_gmrf_noise(shape, sigma=1.0):
 def generate_perlin_noise_2d(shape: Tuple[int, int], res: Tuple[int, int]) -> torch.Tensor:
     def f(t):
         return 6 * t**5 - 15 * t**4 + 10 * t**3
-
-    delta = (res[0] / shape[0], res[1] / shape[1])
+    
+    # 确保 res 是整数
+    res = tuple(map(int, res))
+    
+    # 计算网格参数
+    delta = (shape[0] / res[0], shape[1] / res[1])
     d = (shape[0] // res[0], shape[1] // res[1])
-    grid = torch.stack(torch.meshgrid(
-        torch.arange(0, res[0]+1, dtype=torch.float32) / res[0],
-        torch.arange(0, res[1]+1, dtype=torch.float32) / res[1]
-    ), dim=-1)
+    
+    # 创建基础网格
+    y = torch.arange(0, shape[0], dtype=torch.float32)
+    x = torch.arange(0, shape[1], dtype=torch.float32)
+    y, x = torch.meshgrid(y, x)
+    
+    # 计算网格坐标
+    grid_y = y / delta[0]
+    grid_x = x / delta[1]
+    
+    # 生成随机梯度
+    angles = 2 * np.pi * torch.rand(res[0] + 1, res[1] + 1)
+    gradients = torch.stack([torch.cos(angles), torch.sin(angles)], dim=-1)
+    
+    # 获取四个角的梯度
+    grid_y0 = torch.floor(grid_y).long()
+    grid_y1 = grid_y0 + 1
+    grid_x0 = torch.floor(grid_x).long()
+    grid_x1 = grid_x0 + 1
+    
+    # 计算权重
+    u = f(grid_y - grid_y0)
+    v = f(grid_x - grid_x0)
+    
+    # 获取四个角的值
+    g00 = gradients[grid_y0 % res[0], grid_x0 % res[1]]
+    g10 = gradients[grid_y1 % res[0], grid_x0 % res[1]]
+    g01 = gradients[grid_y0 % res[0], grid_x1 % res[1]]
+    g11 = gradients[grid_y1 % res[0], grid_x1 % res[1]]
+    
+    # 计算点积
+    n00 = (torch.stack([grid_y - grid_y0, grid_x - grid_x0], dim=-1) * g00).sum(-1)
+    n10 = (torch.stack([grid_y - grid_y1, grid_x - grid_x0], dim=-1) * g10).sum(-1)
+    n01 = (torch.stack([grid_y - grid_y0, grid_x - grid_x1], dim=-1) * g01).sum(-1)
+    n11 = (torch.stack([grid_y - grid_y1, grid_x - grid_x1], dim=-1) * g11).sum(-1)
+    
+    # 双线性插值
+    noise = (1 - v) * ((1 - u) * n00 + u * n10) + v * ((1 - u) * n01 + u * n11)
+    
+    return noise
 
-    angles = 2 * np.pi * torch.rand(res[0]+1, res[1]+1)
-    gradients = torch.stack((torch.cos(angles), torch.sin(angles)), dim=-1)
-
-    # 修正维度匹配的问题
-    g00 = gradients[:-1, :-1]
-    g10 = gradients[1:, :-1]
-    g01 = gradients[:-1, 1:]
-    g11 = gradients[1:, 1:]
-
-    # 计算插值
-    n00 = (grid[:-1, :-1] * g00).sum(-1)
-    n10 = (grid[1:, :-1] * g10).sum(-1)
-    n01 = (grid[:-1, 1:] * g01).sum(-1)
-    n11 = (grid[1:, 1:] * g11).sum(-1)
-
-    t = f(torch.linspace(0, 1, d[0], device=grid.device).unsqueeze(1))
-    s = f(torch.linspace(0, 1, d[1], device=grid.device).unsqueeze(0))
-
-    n0 = n00 + t * (n10 - n00)
-    n1 = n01 + t * (n11 - n01)
-    perlin = n0 + s * (n1 - n0)
-    return perlin
 
 # this comes from the AnoDDPM paper / repository
 def generate_simplex_noise(
